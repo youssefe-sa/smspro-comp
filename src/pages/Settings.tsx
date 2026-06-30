@@ -39,6 +39,7 @@ import {
   isSupabaseConfigured,
   saveSupabaseConfig,
   getCurrentSupabaseConfig,
+  getSession,
 } from '@/lib/supabaseClient'
 
 const TABS = [
@@ -557,9 +558,42 @@ function SMSTab() {
       return
     }
     setTesting(true)
-    await new Promise((r) => setTimeout(r, 1500))
-    setTesting(false)
-    addToast({ type: 'success', title: 'Connexion Twilio OK ✓', description: 'Vos identifiants sont valides' })
+
+    if (isDemo || !isSupabaseConfigured()) {
+      await new Promise((r) => setTimeout(r, 1500))
+      setTesting(false)
+      addToast({ type: 'success', title: 'Connexion Twilio OK ✓', description: 'Vos identifiants sont valides' })
+      return
+    }
+
+    try {
+      const session = await getSession()
+      const { url } = getCurrentSupabaseConfig()
+
+      const response = await fetch(`${url}/functions/v1/send-test-sms`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session?.access_token}`,
+        },
+        body: JSON.stringify({
+          phone: config.senderNumber,
+          message: 'SMSPro: Test de connexion Twilio réussi !',
+        }),
+      })
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Échec de l\'envoi')
+      }
+
+      addToast({ type: 'success', title: 'SMS de test envoyé ✓', description: `SID: ${data.message_sid}` })
+    } catch (err) {
+      addToast({ type: 'error', title: 'Échec du test SMS', description: (err as Error).message })
+    } finally {
+      setTesting(false)
+    }
   }
 
   const handleCopyWebhook = async () => {
