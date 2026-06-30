@@ -19,6 +19,7 @@ import { Input, Textarea, Select } from '@/components/ui/Input'
 import { cn } from '@/utils/cn'
 import { calculateSMSCount, formatCurrency, personalizeMessage } from '@/lib/utils'
 import { mockSegments } from '@/lib/mockData'
+import { isSupabaseConfigured } from '@/lib/supabaseClient'
 
 const TEMPLATES = [
   { id: 't1', label: 'Promotion', icon: '🎉', text: 'Bonjour {prenom}, profitez de -20% sur toute la collection avec le code PROMO20. Valable jusqu\'au 31/12 !' },
@@ -35,7 +36,7 @@ const STEPS = [
 
 export function NewCampaignPage() {
   const navigate = useNavigate()
-  const { contacts, addCampaign, addToast } = useStore()
+  const { contacts, addCampaign, addToast, isDemo } = useStore()
   const [step, setStep] = useState(1)
   const [sending, setSending] = useState(false)
   const [testSent, setTestSent] = useState(false)
@@ -109,16 +110,49 @@ export function NewCampaignPage() {
     setStep(step + 1)
   }
 
-  const handleSendTest = () => {
+  const handleSendTest = async () => {
     if (!testPhone) {
       addToast({ type: 'error', title: 'Numéro requis' })
       return
     }
     setTestSent(false)
-    setTimeout(() => {
-      setTestSent(true)
-      addToast({ type: 'success', title: 'SMS test envoyé !', description: `Vérifiez le ${testPhone}` })
-    }, 1000)
+
+    // Production mode: call real Edge Function
+    if (!isDemo && isSupabaseConfigured()) {
+      try {
+        const { getAccessToken } = await import('@/lib/supabaseClient')
+        const token = await getAccessToken()
+        const supabaseUrl = (import.meta as any).env?.VITE_SUPABASE_URL
+        const anonKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY
+
+        const response = await fetch(`${supabaseUrl}/functions/v1/send-test-sms`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token || anonKey}`,
+            'apikey': anonKey,
+          },
+          body: JSON.stringify({ phone: testPhone, message: form.message }),
+        })
+
+        if (!response.ok) {
+          const errText = await response.text()
+          throw new Error(errText || `HTTP ${response.status}`)
+        }
+
+        setTestSent(true)
+        addToast({ type: 'success', title: 'SMS test envoyé !', description: `Vérifiez le ${testPhone}` })
+      } catch (err) {
+        addToast({ type: 'error', title: 'Erreur envoi test', description: (err as Error).message })
+        setTestSent(false)
+      }
+    } else {
+      // Demo mode: simulate
+      setTimeout(() => {
+        setTestSent(true)
+        addToast({ type: 'success', title: 'SMS test envoyé !', description: `Vérifiez le ${testPhone}` })
+      }, 1000)
+    }
   }
 
   const handleSend = async () => {
