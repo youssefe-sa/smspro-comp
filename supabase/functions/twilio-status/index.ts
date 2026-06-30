@@ -1,5 +1,5 @@
-// Supabase Edge Function : Réception des webhooks Twilio
-// À déployer avec : supabase functions deploy twilio-status
+// Supabase Edge Function: Twilio delivery status webhook
+// Deploy with: supabase functions deploy twilio-status
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
@@ -8,12 +8,36 @@ const supabase = createClient(
   Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 )
 
-Deno.serve(async (req) => {
-  if (req.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 })
+// Map Twilio status to our internal status
+function mapTwilioStatus(twilioStatus: string): string {
+  switch (twilioStatus.toLowerCase()) {
+    case 'delivered':
+      return 'delivered'
+    case 'failed':
+    case 'undelivered':
+      return 'failed'
+    case 'sent':
+      return 'sent'
+    case 'queued':
+    case 'accepted':
+    case 'pending':
+      return 'queued'
+    default:
+      return twilioStatus.toLowerCase()
   }
+}
 
+Deno.serve(async (req) => {
+  // Always return 200 to prevent Twilio retries
   try {
+    if (req.method !== 'POST') {
+      console.warn('Non-POST request received')
+      return new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+
     const contentType = req.headers.get('content-type') || ''
     let payload: any
 
@@ -23,21 +47,30 @@ Deno.serve(async (req) => {
     } else if (contentType.includes('application/json')) {
       payload = await req.json()
     } else {
-      return new Response('Unsupported content type', { status: 400 })
+      console.warn('Unsupported content type:', contentType)
+      return new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
     }
 
     console.log('Twilio webhook:', payload)
 
     if (!payload.MessageSid || !payload.MessageStatus) {
-      return new Response('Missing required fields', { status: 400 })
+      console.warn('Missing required fields:', payload)
+      return new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
     }
 
-    const status = payload.MessageStatus.toLowerCase()
-    const updates: Record<string, any> = { status }
+    const twilioStatus = payload.MessageStatus
+    const mappedStatus = mapTwilioStatus(twilioStatus)
+    const updates: Record<string, any> = { status: mappedStatus }
 
-    if (status === 'delivered') {
+    if (mappedStatus === 'delivered') {
       updates.delivered_at = new Date().toISOString()
-    } else if (status === 'failed' || status === 'undelivered') {
+    } else if (mappedStatus === 'failed') {
       updates.failed_at = new Date().toISOString()
       if (payload.ErrorCode) updates.error_code = payload.ErrorCode
       if (payload.ErrorMessage) updates.error_message = payload.ErrorMessage
@@ -50,17 +83,19 @@ Deno.serve(async (req) => {
 
     if (error) {
       console.error('Update error:', error)
-      return new Response(JSON.stringify({ error: error.message }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      })
+      // Still return 200 to prevent Twilio retries
     }
 
-    await supabase.from('audit_logs').insert({
+    // Insert audit log entry
+    const { error: auditError } = await supabase.from('audit_logs').insert({
       action: 'twilio_webhook',
       entity_type: 'sms_log',
       details: payload,
     })
+
+    if (auditError) {
+      console.error('Audit log error:', auditError)
+    }
 
     return new Response(JSON.stringify({ success: true }), {
       status: 200,
@@ -68,9 +103,10 @@ Deno.serve(async (req) => {
     })
   } catch (error) {
     console.error('Webhook error:', error)
-    return new Response(
-      JSON.stringify({ error: (error as Error).message }),
-      { status: 200, headers: { 'Content-Type': 'application/json' } }
-    )
+    // Always return 200 to prevent Twilio retries
+    return new Response(JSON.stringify({ success: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
   }
 })
